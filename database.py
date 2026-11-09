@@ -1,78 +1,115 @@
-import math
 import time
+from contextlib import asynccontextmanager
+
 import aiosqlite
 
+import config
+import game
+
 DB_NAME = "firefly.db"
+TIMEOUT = 10  # secondes d'attente si la base est occupée
+
+COLLECTOR_COLUMNS = ("collectors", "collectorsv2", "collectorsv3", "collectorsv4")
+
 
 async def init_db():
-    async with aiosqlite.connect(DB_NAME) as db:
+    async with aiosqlite.connect(DB_NAME, timeout=TIMEOUT) as db:
         await db.execute("""
             CREATE TABLE IF NOT EXISTS players (
                 user_id INTEGER PRIMARY KEY,
-                fireflies INTEGER DEFAULT 0,
-                collectors INTEGER DEFAULT 0,
-                collectorsv2 INTEGER DEFAULT 0,
-                collectorsv3 INTEGER DEFAULT 0,
-                collectorsv4 INTEGER DEFAULT 0,
-                multiplicator INTEGER DEFAULT 1,
-                treelevel INTEGER DEFAULT 0,
-                last_collected REAL,
-                last_manual_click REAL DEFAULT 0
+                name TEXT NOT NULL DEFAULT '',
+                fireflies INTEGER NOT NULL DEFAULT 0,
+                collectors INTEGER NOT NULL DEFAULT 0,
+                collectorsv2 INTEGER NOT NULL DEFAULT 0,
+                collectorsv3 INTEGER NOT NULL DEFAULT 0,
+                collectorsv4 INTEGER NOT NULL DEFAULT 0,
+                treelevel INTEGER NOT NULL DEFAULT 0,
+                last_collected REAL NOT NULL,
+                last_manual_click REAL NOT NULL DEFAULT 0
             )
         """)
         await db.commit()
 
-async def get_player(user_id: int) -> dict:
+
+def _counts(player: dict) -> tuple[int, int, int, int]:
+    return tuple(player[column] for column in COLLECTOR_COLUMNS)
+
+
+@asynccontextmanager
+async def _transaction(user_id: int, name: str):
+    """Une opération = une transaction : lecture, production hors ligne, écriture.
+
+    Une opération concurrente attend la fin de celle-ci et repart de l'état à jour.
+    """
     now = time.time()
-    async with aiosqlite.connect(DB_NAME) as db:
+    async with aiosqlite.connect(DB_NAME, timeout=TIMEOUT) as db:
         db.row_factory = aiosqlite.Row
+        await db.execute("BEGIN IMMEDIATE")
+        await db.execute(
+            "INSERT OR IGNORE INTO players (user_id, name, last_collected) VALUES (?, ?, ?)",
+            (user_id, name, now),
+        )
         async with db.execute("SELECT * FROM players WHERE user_id = ?", (user_id,)) as cursor:
-            row = await cursor.fetchone()
+            player = dict(await cursor.fetchone())
 
-        if row is None:
-            await db.execute(
-                "INSERT INTO players (user_id, fireflies, collectors, last_collected, last_manual_click) VALUES (?, 0, 0, ?, 0)",
-                (user_id, now)
-            )
-            await db.commit()
-            return {
-                "user_id": user_id,
-                "fireflies": 0,
-                "last_collected": now,
-                "last_manual_click": 0,
-                "collectors": 0,
-                "collectorsv2": 0,
-                "collectorsv3": 0,
-                "collectorsv4": 0,
-                "multiplicator": 1,
-                "treelevel": 0
-            }
+        gain = game.offline_gain(_counts(player), player["treelevel"], now - player["last_collected"])
+        player["fireflies"] = min(player["fireflies"] + gain, config.MAX_FIREFLIES)
+        player["last_collected"] = now
+        player["name"] = name
 
-        data = dict(row)
-        # Production passive des collecteurs (1 luciole par collecteur par seconde)
-        elapsed = int(now - data["last_collected"])
-        if elapsed > 0 and (data["collectors"]+data["collectorsv2"]+data["collectorsv3"]+data["collectorsv4"] > 0):
-            data["fireflies"] += (
-                    (10 ** data["treelevel"]) * elapsed * data["multiplicator"] * 
-                    ( data["collectors"] if data["collectors"] > 0 else 1) *
-                    ( data["collectorsv2"] if data["collectorsv2"] > 0 else 1) *
-                    ( data["collectorsv3"] if data["collectorsv3"] > 0 else 1) *
-                    ( data["collectorsv4"] if data["collectorsv4"] > 0 else 1)
-                )
-        data["last_collected"] = now
+        yield player
 
         await db.execute(
-            "UPDATE players SET fireflies = ?, last_collected = ? WHERE user_id = ?",
-            (data["fireflies"], data["last_collected"], user_id)
+            """UPDATE players SET name = ?, fireflies = ?, collectors = ?, collectorsv2 = ?,
+               collectorsv3 = ?, collectorsv4 = ?, treelevel = ?, last_collected = ?,
+               last_manual_click = ? WHERE user_id = ?""",
+            (player["name"], player["fireflies"], *_counts(player), player["treelevel"],
+             player["last_collected"], player["last_manual_click"], user_id),
         )
         await db.commit()
-        return data
 
-async def save_player(data: dict):
-    async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute("""
-            UPDATE players
-            SET fireflies = ?, collectors = ?, collectorsv2 = 0, collectorsv3 = 0, collectorsv4 = 0,  multiplicator = 0,  treelevel = 0, last_collected = ?, last_manual_click = ?, 
-            WHERE user_id = ?
-        """, (data["fireflies"], data["collectors"], data["collectorsv2"], data["collectorsv3"], data["collectorsv4"], data["multiplicator"], data["treelevel"], data["last_collected"], data["last_manual_click"], data["user_id"]))
-        await db.commit()
+
+async def get_player(user_id: int, name: str) -> dict:
+    async with _transaction(user_id, name) as player:
+        return player
+
+
+async def click(user_id: int, name: str) -> tuple[dict, bool]:
+    async with _transaction(user_id, name) as player:
+        now = player["last_collected"]
+        if now - player["last_manual_click"] < config.CLICK_COOLDOWN:
+            return player, False
+        player["fireflies"] = min(player["fireflies"] + game.click_gain(player["treelevel"]), config.MAX_FIREFLIES)
+        player["last_manual_click"] = now
+        return player, True
+
+
+async def buy_collector(user_id: int, name: str, index: int) -> tuple[dict, bool]:
+    async with _transaction(user_id, name) as player:
+        column = COLLECTOR_COLUMNS[index]
+        cost = game.collector_cost(index, player[column])
+        if player["fireflies"] < cost:
+            return player, False
+        player["fireflies"] -= cost
+        player[column] += 1
+        return player, True
+
+
+async def rebirth(user_id: int, name: str) -> tuple[dict, bool]:
+    async with _transaction(user_id, name) as player:
+        if player["fireflies"] < game.rebirth_cost(player["treelevel"]):
+            return player, False
+        player["fireflies"] = 0
+        for column in COLLECTOR_COLUMNS:
+            player[column] = 0
+        player["treelevel"] += 1
+        return player, True
+
+
+async def get_leaderboard(limit: int) -> list[dict]:
+    async with aiosqlite.connect(DB_NAME, timeout=TIMEOUT) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT name, fireflies, treelevel FROM players ORDER BY fireflies DESC LIMIT ?", (limit,)
+        ) as cursor:
+            return [dict(row) for row in await cursor.fetchall()]

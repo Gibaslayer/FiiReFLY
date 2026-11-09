@@ -1,4 +1,6 @@
 .env
 discord.log
 .vscode
-.pyc
+*.pyc
+*.db
+docs
