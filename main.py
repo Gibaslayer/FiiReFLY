@@ -54,11 +54,25 @@ async def frime(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 
-@bot.tree.command(name="classement", description="Affiche les 10 joueurs ayant le plus de lucioles")
+@bot.tree.command(name="classement", description="Affiche les 10 joueurs ayant le plus haut niveau d'arbre et le plus de lucioles")
 async def classement(interaction: discord.Interaction):
     rows = await db.get_leaderboard(10)
     lines = [
-        f"**{i}.** {row['name']} : {format_number(row['fireflies'])} lucioles (arbre niveau {row['treelevel']})"
+        f"**{i}.**" + discord.utils.escape_markdown(f" {row['name']} : {format_number(row['fireflies'])} lucioles (arbre niveau {row['treelevel']})")
+        for i, row in enumerate(rows, start=1)
+    ]
+    embed = discord.Embed(
+        title="Classement",
+        description="\n".join(lines) or "Aucun joueur pour l'instant.",
+        color=discord.Color.gold(),
+    )
+    await interaction.response.send_message(embed=embed)
+    
+@bot.tree.command(name="classement_lucioles", description="Affiche les 10 joueurs ayant le plus de lucioles")
+async def classement_lucioles(interaction: discord.Interaction):
+    rows = await db.get_leaderboard(10, False)
+    lines = [
+        f"**{i}.**" + discord.utils.escape_markdown(f" {row['name']} : {format_number(row['fireflies'])} lucioles (arbre niveau {row['treelevel']})")
         for i, row in enumerate(rows, start=1)
     ]
     embed = discord.Embed(
@@ -69,8 +83,8 @@ async def classement(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 
-@bot.tree.command(name="fenetre", description="Ouvre ton atelier de lucioles")
-async def fenetre(interaction: discord.Interaction):
+@bot.tree.command(name="game", description="Ouvre ton atelier de lucioles")
+async def game(interaction: discord.Interaction):
     view = View_fabric(interaction.user.id, interaction.user.name)
     await view.start(interaction)
 

@@ -24,10 +24,47 @@ async def init_db():
                 collectorsv3 INTEGER NOT NULL DEFAULT 0,
                 collectorsv4 INTEGER NOT NULL DEFAULT 0,
                 treelevel INTEGER NOT NULL DEFAULT 0,
-                last_collected REAL NOT NULL,
+                last_collected REAL NOT NULL,               
+                last_updated REAL DEFAULT 0,               
                 last_manual_click REAL NOT NULL DEFAULT 0
             )
         """)
+        #last_collected : La dernière fois que le joueur s'est connecté activement
+        #last_updated : La dernière fois que le classement a mis à jour ses gains en arrière-plan
+        await db.commit()
+        
+async def maj_lucioles():
+    now = time.time()
+    async with aiosqlite.connect(DB_NAME, timeout=TIMEOUT) as db:
+        db.row_factory = aiosqlite.Row
+        await db.execute("BEGIN IMMEDIATE")
+        
+        # Récupérer tous les joueurs
+        async with db.execute("SELECT * FROM players") as cursor:
+            rows = await cursor.fetchall()
+            
+        for row in rows:
+            player = dict(row)
+            user_id = player["user_id"]
+            
+            # On utilise last_updated s'il existe et est valide (> 0), sinon last_collected
+            ref_time = player["last_updated"] if player["last_updated"] and player["last_updated"] > 0 else player["last_collected"]
+            time_delta = now - ref_time
+            
+            if time_delta <= 0:
+                continue
+                
+            # Calcul du gain basé sur l'intervalle depuis la dernière mise à jour auto
+            gain = game.offline_gain(_counts(player), player["treelevel"], time_delta)
+            player["fireflies"] = min(player["fireflies"] + gain, config.MAX_FIREFLIES)
+            
+            # Mise à jour UNIQUEMENT des fireflies et de last_updated.
+            # last_collected n'est PAS touché pour préserver la limite de la collecte hors-ligne du joueur.
+            await db.execute(
+                "UPDATE players SET fireflies = ?, last_updated = ? WHERE user_id = ?",
+                (player["fireflies"], now, user_id)
+            )
+            
         await db.commit()
 
 
@@ -46,25 +83,30 @@ async def _transaction(user_id: int, name: str):
         db.row_factory = aiosqlite.Row
         await db.execute("BEGIN IMMEDIATE")
         await db.execute(
-            "INSERT OR IGNORE INTO players (user_id, name, last_collected) VALUES (?, ?, ?)",
-            (user_id, name, now),
+            "INSERT OR IGNORE INTO players (user_id, name, last_collected, last_updated) VALUES (?, ?, ?, ?)",
+            (user_id, name, now, now),
         )
         async with db.execute("SELECT * FROM players WHERE user_id = ?", (user_id,)) as cursor:
             player = dict(await cursor.fetchone())
+            
+        # On prend le plus récent entre la dernière collecte active et la dernière maj du classement
+        ref_time = max(player["last_collected"], player["last_updated"])
+        time_delta = now - ref_time
 
-        gain = game.offline_gain(_counts(player), player["treelevel"], now - player["last_collected"])
+        gain = game.offline_gain(_counts(player), player["treelevel"], time_delta)
         player["fireflies"] = min(player["fireflies"] + gain, config.MAX_FIREFLIES)
         player["last_collected"] = now
+        player["last_updated"] = now
         player["name"] = name
 
         yield player
 
         await db.execute(
             """UPDATE players SET name = ?, fireflies = ?, collectors = ?, collectorsv2 = ?,
-               collectorsv3 = ?, collectorsv4 = ?, treelevel = ?, last_collected = ?,
+               collectorsv3 = ?, collectorsv4 = ?, treelevel = ?, last_collected = ?, last_updated = ?,
                last_manual_click = ? WHERE user_id = ?""",
             (player["name"], player["fireflies"], *_counts(player), player["treelevel"],
-             player["last_collected"], player["last_manual_click"], user_id),
+             player["last_collected"], player["last_updated"], player["last_manual_click"], user_id),
         )
         await db.commit()
 
@@ -106,10 +148,17 @@ async def rebirth(user_id: int, name: str) -> tuple[dict, bool]:
         return player, True
 
 
-async def get_leaderboard(limit: int) -> list[dict]:
+async def get_leaderboard(limit: int, byTreeLvl:bool = True) -> list[dict]:
+    await maj_lucioles();
     async with aiosqlite.connect(DB_NAME, timeout=TIMEOUT) as db:
         db.row_factory = aiosqlite.Row
-        async with db.execute(
-            "SELECT name, fireflies, treelevel FROM players ORDER BY fireflies DESC LIMIT ?", (limit,)
-        ) as cursor:
-            return [dict(row) for row in await cursor.fetchall()]
+        if (byTreeLvl) :
+            async with db.execute(
+                        "SELECT name, fireflies, treelevel FROM players ORDER BY treelevel DESC, fireflies DESC LIMIT ?", (limit,)
+                    ) as cursor:
+                        return [dict(row) for row in await cursor.fetchall()]
+        else :
+            async with db.execute(
+                "SELECT name, fireflies, treelevel FROM players ORDER BY fireflies DESC LIMIT ?", (limit,)
+            ) as cursor:
+                return [dict(row) for row in await cursor.fetchall()]
