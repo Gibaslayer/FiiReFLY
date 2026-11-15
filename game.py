@@ -21,9 +21,13 @@ def production_per_second(counts: tuple[int, int, int, int], treelevel: int) -> 
     return base * multiplier(treelevel)
 
 
+def credited_seconds(elapsed: float) -> int:
+    """Secondes entières créditées (plafonnées par OFFLINE_CAP)."""
+    return int(min(max(elapsed, 0), config.OFFLINE_CAP))
+
+
 def offline_gain(counts: tuple[int, int, int, int], treelevel: int, elapsed: float) -> int:
-    seconds = min(max(elapsed, 0), config.OFFLINE_CAP)
-    return int(seconds) * production_per_second(counts, treelevel)
+    return credited_seconds(elapsed) * production_per_second(counts, treelevel)
 
 
 def rebirth_cost(treelevel: int) -> int:

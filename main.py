@@ -70,7 +70,7 @@ async def classement(interaction: discord.Interaction):
     
 @bot.tree.command(name="classement_lucioles", description="Affiche les 10 joueurs ayant le plus de lucioles")
 async def classement_lucioles(interaction: discord.Interaction):
-    rows = await db.get_leaderboard(10, False)
+    rows = await db.get_leaderboard(10, by_tree_level=False)
     lines = [
         f"**{i}.**" + discord.utils.escape_markdown(f" {row['name']} : {format_number(row['fireflies'])} lucioles (arbre niveau {row['treelevel']})")
         for i, row in enumerate(rows, start=1)
@@ -84,7 +84,7 @@ async def classement_lucioles(interaction: discord.Interaction):
 
 
 @bot.tree.command(name="game", description="Ouvre ton atelier de lucioles")
-async def game(interaction: discord.Interaction):
+async def open_game(interaction: discord.Interaction):
     view = View_fabric(interaction.user.id, interaction.user.name)
     await view.start(interaction)
 

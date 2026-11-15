@@ -14,6 +14,8 @@ COLLECTOR_COLUMNS = ("collectors", "collectorsv2", "collectorsv3", "collectorsv4
 
 async def init_db():
     async with aiosqlite.connect(DB_NAME, timeout=TIMEOUT) as db:
+        # last_collected : instant jusqu'auquel la production du joueur a été créditée.
+        # (Les anciennes bases peuvent avoir une colonne last_updated : elle n'est plus utilisée.)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS players (
                 user_id INTEGER PRIMARY KEY,
@@ -24,47 +26,10 @@ async def init_db():
                 collectorsv3 INTEGER NOT NULL DEFAULT 0,
                 collectorsv4 INTEGER NOT NULL DEFAULT 0,
                 treelevel INTEGER NOT NULL DEFAULT 0,
-                last_collected REAL NOT NULL,               
-                last_updated REAL DEFAULT 0,               
+                last_collected REAL NOT NULL,
                 last_manual_click REAL NOT NULL DEFAULT 0
             )
         """)
-        #last_collected : La dernière fois que le joueur s'est connecté activement
-        #last_updated : La dernière fois que le classement a mis à jour ses gains en arrière-plan
-        await db.commit()
-        
-async def maj_lucioles():
-    now = time.time()
-    async with aiosqlite.connect(DB_NAME, timeout=TIMEOUT) as db:
-        db.row_factory = aiosqlite.Row
-        await db.execute("BEGIN IMMEDIATE")
-        
-        # Récupérer tous les joueurs
-        async with db.execute("SELECT * FROM players") as cursor:
-            rows = await cursor.fetchall()
-            
-        for row in rows:
-            player = dict(row)
-            user_id = player["user_id"]
-            
-            # On utilise last_updated s'il existe et est valide (> 0), sinon last_collected
-            ref_time = player["last_updated"] if player["last_updated"] and player["last_updated"] > 0 else player["last_collected"]
-            time_delta = now - ref_time
-            
-            if time_delta <= 0:
-                continue
-                
-            # Calcul du gain basé sur l'intervalle depuis la dernière mise à jour auto
-            gain = game.offline_gain(_counts(player), player["treelevel"], time_delta)
-            player["fireflies"] = min(player["fireflies"] + gain, config.MAX_FIREFLIES)
-            
-            # Mise à jour UNIQUEMENT des fireflies et de last_updated.
-            # last_collected n'est PAS touché pour préserver la limite de la collecte hors-ligne du joueur.
-            await db.execute(
-                "UPDATE players SET fireflies = ?, last_updated = ? WHERE user_id = ?",
-                (player["fireflies"], now, user_id)
-            )
-            
         await db.commit()
 
 
@@ -77,36 +42,37 @@ async def _transaction(user_id: int, name: str):
     """Une opération = une transaction : lecture, production hors ligne, écriture.
 
     Une opération concurrente attend la fin de celle-ci et repart de l'état à jour.
+    player["now"] est l'instant de l'opération (non enregistré).
     """
     now = time.time()
     async with aiosqlite.connect(DB_NAME, timeout=TIMEOUT) as db:
         db.row_factory = aiosqlite.Row
         await db.execute("BEGIN IMMEDIATE")
         await db.execute(
-            "INSERT OR IGNORE INTO players (user_id, name, last_collected, last_updated) VALUES (?, ?, ?, ?)",
-            (user_id, name, now, now),
+            "INSERT OR IGNORE INTO players (user_id, name, last_collected) VALUES (?, ?, ?)",
+            (user_id, name, now),
         )
         async with db.execute("SELECT * FROM players WHERE user_id = ?", (user_id,)) as cursor:
             player = dict(await cursor.fetchone())
-            
-        # On prend le plus récent entre la dernière collecte active et la dernière maj du classement
-        ref_time = max(player["last_collected"], player["last_updated"])
-        time_delta = now - ref_time
 
-        gain = game.offline_gain(_counts(player), player["treelevel"], time_delta)
+        elapsed = now - player["last_collected"]
+        seconds = game.credited_seconds(elapsed)
+        gain = seconds * game.production_per_second(_counts(player), player["treelevel"])
         player["fireflies"] = min(player["fireflies"] + gain, config.MAX_FIREFLIES)
-        player["last_collected"] = now
-        player["last_updated"] = now
+        # On n'avance que des secondes entières créditées : la fraction restante
+        # n'est pas perdue. Au-delà du plafond hors ligne, l'excédent est abandonné.
+        player["last_collected"] = now if elapsed > config.OFFLINE_CAP else player["last_collected"] + seconds
         player["name"] = name
+        player["now"] = now
 
         yield player
 
         await db.execute(
             """UPDATE players SET name = ?, fireflies = ?, collectors = ?, collectorsv2 = ?,
-               collectorsv3 = ?, collectorsv4 = ?, treelevel = ?, last_collected = ?, last_updated = ?,
+               collectorsv3 = ?, collectorsv4 = ?, treelevel = ?, last_collected = ?,
                last_manual_click = ? WHERE user_id = ?""",
             (player["name"], player["fireflies"], *_counts(player), player["treelevel"],
-             player["last_collected"], player["last_updated"], player["last_manual_click"], user_id),
+             player["last_collected"], player["last_manual_click"], user_id),
         )
         await db.commit()
 
@@ -118,7 +84,7 @@ async def get_player(user_id: int, name: str) -> dict:
 
 async def click(user_id: int, name: str) -> tuple[dict, bool]:
     async with _transaction(user_id, name) as player:
-        now = player["last_collected"]
+        now = player["now"]
         if now - player["last_manual_click"] < config.CLICK_COOLDOWN:
             return player, False
         player["fireflies"] = min(player["fireflies"] + game.click_gain(player["treelevel"]), config.MAX_FIREFLIES)
@@ -148,17 +114,26 @@ async def rebirth(user_id: int, name: str) -> tuple[dict, bool]:
         return player, True
 
 
-async def get_leaderboard(limit: int, byTreeLvl:bool = True) -> list[dict]:
-    await maj_lucioles();
+async def get_leaderboard(limit: int, by_tree_level: bool = True) -> list[dict]:
+    """Classement en lecture seule : les lucioles affichées incluent la production
+    en cours (calculée à la volée), sans rien écrire dans la base."""
+    now = time.time()
     async with aiosqlite.connect(DB_NAME, timeout=TIMEOUT) as db:
         db.row_factory = aiosqlite.Row
-        if (byTreeLvl) :
-            async with db.execute(
-                        "SELECT name, fireflies, treelevel FROM players ORDER BY treelevel DESC, fireflies DESC LIMIT ?", (limit,)
-                    ) as cursor:
-                        return [dict(row) for row in await cursor.fetchall()]
-        else :
-            async with db.execute(
-                "SELECT name, fireflies, treelevel FROM players ORDER BY fireflies DESC LIMIT ?", (limit,)
-            ) as cursor:
-                return [dict(row) for row in await cursor.fetchall()]
+        async with db.execute("SELECT * FROM players") as cursor:
+            players = [dict(row) for row in await cursor.fetchall()]
+
+    rows = []
+    for player in players:
+        gain = game.offline_gain(_counts(player), player["treelevel"], now - player["last_collected"])
+        rows.append({
+            "name": player["name"],
+            "fireflies": min(player["fireflies"] + gain, config.MAX_FIREFLIES),
+            "treelevel": player["treelevel"],
+        })
+
+    if by_tree_level:
+        rows.sort(key=lambda r: (r["treelevel"], r["fireflies"]), reverse=True)
+    else:
+        rows.sort(key=lambda r: r["fireflies"], reverse=True)
+    return rows[:limit]
