@@ -14,3 +14,7 @@ REBIRTH_BASE = 1_000_000              # coût du niveau 0 -> 1
 REBIRTH_GROWTH = 5                    # le coût est multiplié par 5 à chaque niveau
 
 MAX_FIREFLIES = 2**63 - 1             # limite des entiers SQLite
+
+# Pari à Yggdrasil (roulette à 37 cases : 18 rouges, 18 noires, 1 verte)
+GAMBLING_WEIGHTS = {"rouge": 18, "noir": 18, "vert": 1}
+GAMBLING_PAYOUTS = {"rouge": 2, "noir": 2, "vert": 36}  # multiple de la mise rendu en cas de gain

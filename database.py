@@ -114,6 +114,19 @@ async def rebirth(user_id: int, name: str) -> tuple[dict, bool]:
         return player, True
 
 
+async def gamble(user_id: int, name: str, choice: str, bet: int) -> tuple[dict, tuple[str, int] | None]:
+    """Pari sur une couleur. Renvoie (joueur, (couleur tirée, lucioles rendues)),
+    ou (joueur, None) si le solde est insuffisant. Tirage et paiement sont dans la
+    même transaction que la vérification du solde."""
+    async with _transaction(user_id, name) as player:
+        if bet < 1 or player["fireflies"] < bet:
+            return player, None
+        outcome = game.spin()
+        payout = game.gamble_payout(choice, outcome, bet)
+        player["fireflies"] = min(player["fireflies"] - bet + payout, config.MAX_FIREFLIES)
+        return player, (outcome, payout)
+
+
 async def get_leaderboard(limit: int, by_tree_level: bool = True) -> list[dict]:
     """Classement en lecture seule : les lucioles affichées incluent la production
     en cours (calculée à la volée), sans rien écrire dans la base."""

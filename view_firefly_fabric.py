@@ -117,12 +117,12 @@ class View_fabric(discord.ui.View):
     def _build_items(self):
         self.clear_items()
         for page, label in PAGES:
-            style = discord.ButtonStyle.primary if page == self.page else discord.ButtonStyle.secondary
+            style = discord.ButtonStyle.primary if page == self.page else discord.ButtonStyle.green
             self._add(label, style, self._go(page), row=0)
 
         fireflies = self.player["fireflies"]
         if self.page == "atelier":
-            self._add("Capturer", discord.ButtonStyle.success, self._click, row=1)
+            self._add("Capturer", discord.ButtonStyle.gray, self._click, row=1)
         elif self.page == "boutique":
             for i, owned in enumerate(_counts(self.player)):
                 affordable = fireflies >= game.collector_cost(i, owned)

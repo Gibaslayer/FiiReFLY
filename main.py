@@ -2,6 +2,7 @@ import logging
 import os
 
 import discord
+from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 
@@ -10,6 +11,7 @@ import config
 import database as db
 import game
 from view_firefly_fabric import View_fabric, format_number
+from view_gambling import GamblingView
 
 load_dotenv()
 token = os.getenv('DISCORD_TOKEN')
@@ -17,9 +19,7 @@ site_origin = os.getenv('SITE_ORIGIN', '*')
 api_port = int(os.getenv('API_PORT', '8080'))
 
 handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w')
-intents = discord.Intents.all()
-intents.message_content = True
-intents.members = True
+intents = discord.Intents.default()
 
 bot = commands.Bot(command_prefix="/", intents=intents)
 
@@ -87,6 +87,40 @@ async def classement_lucioles(interaction: discord.Interaction):
 async def open_game(interaction: discord.Interaction):
     view = View_fabric(interaction.user.id, interaction.user.name)
     await view.start(interaction)
+
+
+@bot.tree.command(name="gambling", description="Parie des lucioles à Yggdrasil sur une couleur (rouge, noir ou vert)")
+@app_commands.describe(couleur="La couleur sur laquelle tu paries", mise="Nombre de lucioles à parier à Yggdrasil")
+@app_commands.choices(couleur=[
+    app_commands.Choice(name="Rouge (x2)", value="rouge"),
+    app_commands.Choice(name="Noir (x2)", value="noir"),
+    app_commands.Choice(name="Vert (x36)", value="vert"),
+])
+async def gambling(interaction: discord.Interaction, couleur: app_commands.Choice[str], mise: app_commands.Range[int, 1]):
+    player = await db.get_player(interaction.user.id, interaction.user.name)
+    if player["fireflies"] < mise:
+        await interaction.response.send_message(
+            f"Tu n'as que **{format_number(player['fireflies'])}** lucioles : impossible d'en parier {format_number(mise)}.",
+            ephemeral=True,
+        )
+        return
+    view = GamblingView(interaction.user.id, interaction.user.name, couleur.value, mise)
+    await view.start(interaction)
+
+
+@bot.tree.command(name="help",description="Liste toutes les commandes du bot")
+async def help_command(interaction: discord.Interaction):
+    # Générée depuis les commandes enregistrées : une nouvelle commande apparaît toute seule.
+    lines = [
+        f"**/{command.name}** : {command.description}"
+        for command in sorted(bot.tree.get_commands(), key=lambda c: c.name)
+    ]
+    embed = discord.Embed(
+        title="Commandes disponibles",
+        description="\n".join(lines),
+        color=discord.Color.gold(),
+    )
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 @bot.event

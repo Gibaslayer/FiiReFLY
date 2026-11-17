@@ -16,9 +16,13 @@
 
 **Commandes**
 
-- `/fenetre` : ouvre ton atelier (capturer, acheter des collecteurs, renaître)
+- `/help` : liste toutes les commandes
+- `/game` : ouvre ton atelier (capturer, acheter des collecteurs, renaître)
 - `/frime` : montre ta progression à tout le monde
-- `/classement` : top 10 des joueurs
+- `/classement` : top 10 des joueurs (niveau d'arbre, puis lucioles)
+- `/classement_lucioles` : top 10 des joueurs par nombre de lucioles
+- `/gambling <rouge|noir|vert> <mise>` : parie des lucioles à Yggdrasil (rouge/noir x2, vert x36), avec confirmation
+- `/bonjour` : le bot te dit bonjour
 
 **API du classement**
 

@@ -1,5 +1,6 @@
 """Logique pure du jeu : aucun accès Discord ni base de données."""
 import math
+import random
 
 import config
 
@@ -28,6 +29,20 @@ def credited_seconds(elapsed: float) -> int:
 
 def offline_gain(counts: tuple[int, int, int, int], treelevel: int, elapsed: float) -> int:
     return credited_seconds(elapsed) * production_per_second(counts, treelevel)
+
+
+_rng = random.SystemRandom()
+
+
+def spin() -> str:
+    """Tire la couleur d'Yggdrasil selon les poids de config.GAMBLING_WEIGHTS."""
+    colors = tuple(config.GAMBLING_WEIGHTS)
+    return _rng.choices(colors, weights=tuple(config.GAMBLING_WEIGHTS.values()))[0]
+
+
+def gamble_payout(choice: str, outcome: str, bet: int) -> int:
+    """Lucioles rendues au joueur (mise comprise) : 0 si perdu."""
+    return bet * config.GAMBLING_PAYOUTS[choice] if choice == outcome else 0
 
 
 def rebirth_cost(treelevel: int) -> int:
