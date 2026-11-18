@@ -45,6 +45,9 @@ async def frime(interaction: discord.Interaction):
         color=discord.Color.gold(),
     )
     embed.add_field(name="Lucioles", value=format_number(player["fireflies"]), inline=False)
+    counts = tuple(player[column] for column in db.COLLECTOR_COLUMNS)
+    production = game.production_per_second(counts, player["treelevel"])
+    embed.add_field(name="Production", value=f"{format_number(production)} lucioles / s", inline=False)
     embed.add_field(name="Arbre", value=f"Niveau {player['treelevel']} (x{game.multiplier(player['treelevel'])})", inline=False)
     collectors = "\n".join(
         f"{name} : {format_number(player[column])}"
@@ -54,33 +57,32 @@ async def frime(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 
+def _leaderboard_line(rank: int, row: dict) -> str:
+    return f"**{rank}.**" + discord.utils.escape_markdown(
+        f" {row['name']} : {format_number(row['fireflies'])} lucioles (arbre niveau {row['treelevel']})"
+    )
+
+
+async def _send_leaderboard(interaction: discord.Interaction, by_tree_level: bool):
+    rows, me = await db.get_leaderboard_for(interaction.user.id, 10, by_tree_level)
+    lines = [_leaderboard_line(i, row) for i, row in enumerate(rows, start=1)]
+    if not lines:
+        lines.append("Aucun joueur pour l'instant.")
+    if me:
+        lines.append("-------------------")
+        lines.append(_leaderboard_line(me["rank"], me))
+    embed = discord.Embed(title="Classement", description="\n".join(lines), color=discord.Color.gold())
+    await interaction.response.send_message(embed=embed)
+
+
 @bot.tree.command(name="classement", description="Affiche les 10 joueurs ayant le plus haut niveau d'arbre et le plus de lucioles")
 async def classement(interaction: discord.Interaction):
-    rows = await db.get_leaderboard(10)
-    lines = [
-        f"**{i}.**" + discord.utils.escape_markdown(f" {row['name']} : {format_number(row['fireflies'])} lucioles (arbre niveau {row['treelevel']})")
-        for i, row in enumerate(rows, start=1)
-    ]
-    embed = discord.Embed(
-        title="Classement",
-        description="\n".join(lines) or "Aucun joueur pour l'instant.",
-        color=discord.Color.gold(),
-    )
-    await interaction.response.send_message(embed=embed)
-    
+    await _send_leaderboard(interaction, by_tree_level=True)
+
+
 @bot.tree.command(name="classement_lucioles", description="Affiche les 10 joueurs ayant le plus de lucioles")
 async def classement_lucioles(interaction: discord.Interaction):
-    rows = await db.get_leaderboard(10, by_tree_level=False)
-    lines = [
-        f"**{i}.**" + discord.utils.escape_markdown(f" {row['name']} : {format_number(row['fireflies'])} lucioles (arbre niveau {row['treelevel']})")
-        for i, row in enumerate(rows, start=1)
-    ]
-    embed = discord.Embed(
-        title="Classement",
-        description="\n".join(lines) or "Aucun joueur pour l'instant.",
-        color=discord.Color.gold(),
-    )
-    await interaction.response.send_message(embed=embed)
+    await _send_leaderboard(interaction, by_tree_level=False)
 
 
 @bot.tree.command(name="game", description="Ouvre ton atelier de lucioles")

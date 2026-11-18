@@ -27,9 +27,15 @@ async def init_db():
                 collectorsv4 INTEGER NOT NULL DEFAULT 0,
                 treelevel INTEGER NOT NULL DEFAULT 0,
                 last_collected REAL NOT NULL,
-                last_manual_click REAL NOT NULL DEFAULT 0
+                last_manual_click REAL NOT NULL DEFAULT 0,
+                click_upgrades INTEGER NOT NULL DEFAULT 0
             )
         """)
+        # Migration : les bases créées avant l'amélioration de clic n'ont pas la colonne.
+        async with db.execute("PRAGMA table_info(players)") as cursor:
+            columns = {row[1] for row in await cursor.fetchall()}
+        if "click_upgrades" not in columns:
+            await db.execute("ALTER TABLE players ADD COLUMN click_upgrades INTEGER NOT NULL DEFAULT 0")
         await db.commit()
 
 
@@ -70,9 +76,9 @@ async def _transaction(user_id: int, name: str):
         await db.execute(
             """UPDATE players SET name = ?, fireflies = ?, collectors = ?, collectorsv2 = ?,
                collectorsv3 = ?, collectorsv4 = ?, treelevel = ?, last_collected = ?,
-               last_manual_click = ? WHERE user_id = ?""",
+               last_manual_click = ?, click_upgrades = ? WHERE user_id = ?""",
             (player["name"], player["fireflies"], *_counts(player), player["treelevel"],
-             player["last_collected"], player["last_manual_click"], user_id),
+             player["last_collected"], player["last_manual_click"], player["click_upgrades"], user_id),
         )
         await db.commit()
 
@@ -87,7 +93,8 @@ async def click(user_id: int, name: str) -> tuple[dict, bool]:
         now = player["now"]
         if now - player["last_manual_click"] < config.CLICK_COOLDOWN:
             return player, False
-        player["fireflies"] = min(player["fireflies"] + game.click_gain(player["treelevel"]), config.MAX_FIREFLIES)
+        gain = game.click_gain(player["treelevel"], _counts(player), player["click_upgrades"])
+        player["fireflies"] = min(player["fireflies"] + gain, config.MAX_FIREFLIES)
         player["last_manual_click"] = now
         return player, True
 
@@ -103,6 +110,16 @@ async def buy_collector(user_id: int, name: str, index: int) -> tuple[dict, bool
         return player, True
 
 
+async def buy_click_upgrade(user_id: int, name: str) -> tuple[dict, bool]:
+    async with _transaction(user_id, name) as player:
+        cost = game.click_upgrade_cost(player["click_upgrades"])
+        if player["fireflies"] < cost:
+            return player, False
+        player["fireflies"] -= cost
+        player["click_upgrades"] += 1
+        return player, True
+
+
 async def rebirth(user_id: int, name: str) -> tuple[dict, bool]:
     async with _transaction(user_id, name) as player:
         if player["fireflies"] < game.rebirth_cost(player["treelevel"]):
@@ -110,6 +127,7 @@ async def rebirth(user_id: int, name: str) -> tuple[dict, bool]:
         player["fireflies"] = 0
         for column in COLLECTOR_COLUMNS:
             player[column] = 0
+        player["click_upgrades"] = 0
         player["treelevel"] += 1
         return player, True
 
@@ -127,8 +145,8 @@ async def gamble(user_id: int, name: str, choice: str, bet: int) -> tuple[dict, 
         return player, (outcome, payout)
 
 
-async def get_leaderboard(limit: int, by_tree_level: bool = True) -> list[dict]:
-    """Classement en lecture seule : les lucioles affichées incluent la production
+async def _ranked(by_tree_level: bool) -> list[dict]:
+    """Tous les joueurs triés. Lecture seule : les lucioles incluent la production
     en cours (calculée à la volée), sans rien écrire dans la base."""
     now = time.time()
     async with aiosqlite.connect(DB_NAME, timeout=TIMEOUT) as db:
@@ -140,6 +158,7 @@ async def get_leaderboard(limit: int, by_tree_level: bool = True) -> list[dict]:
     for player in players:
         gain = game.offline_gain(_counts(player), player["treelevel"], now - player["last_collected"])
         rows.append({
+            "user_id": player["user_id"],
             "name": player["name"],
             "fireflies": min(player["fireflies"] + gain, config.MAX_FIREFLIES),
             "treelevel": player["treelevel"],
@@ -149,4 +168,22 @@ async def get_leaderboard(limit: int, by_tree_level: bool = True) -> list[dict]:
         rows.sort(key=lambda r: (r["treelevel"], r["fireflies"]), reverse=True)
     else:
         rows.sort(key=lambda r: r["fireflies"], reverse=True)
-    return rows[:limit]
+    return rows
+
+
+def _public(row: dict) -> dict:
+    return {key: row[key] for key in ("name", "fireflies", "treelevel")}
+
+
+async def get_leaderboard(limit: int, by_tree_level: bool = True) -> list[dict]:
+    return [_public(row) for row in (await _ranked(by_tree_level))[:limit]]
+
+
+async def get_leaderboard_for(user_id: int, limit: int, by_tree_level: bool = True) -> tuple[list[dict], dict | None]:
+    """Top `limit` + la ligne du joueur (avec son "rank"), ou None s'il n'a jamais joué."""
+    ranked = await _ranked(by_tree_level)
+    me = next(
+        ({**_public(row), "rank": rank} for rank, row in enumerate(ranked, start=1) if row["user_id"] == user_id),
+        None,
+    )
+    return [_public(row) for row in ranked[:limit]], me

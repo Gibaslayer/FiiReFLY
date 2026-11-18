@@ -34,33 +34,48 @@ def build_embed(page: str, player: dict, notice: str = "") -> discord.Embed:
         embed.add_field(name="Arbre", value=f"Niveau {treelevel} (x{mult})")
 
     elif page == "atelier":
+        gain = game.click_gain(treelevel, _counts(player), player["click_upgrades"])
         embed = discord.Embed(
             title="Atelier",
-            description=f"Capturez des lucioles à la main : **+{format_number(game.click_gain(treelevel))}** par capture.",
+            description=f"Capturez des lucioles à la main : **+{format_number(gain)}** par capture.",
             color=EMBED_COLOR,
         )
         embed.add_field(name="Lucioles", value=fireflies)
+        embed.add_field(name="Amélioration de clic", value=f"Niveau {format_number(player['click_upgrades'])}")
 
     elif page == "boutique":
         embed = discord.Embed(
             title="Boutique",
-            description=f"Achetez des collecteurs pour récolter automatiquement.\nLucioles : **{fireflies}**",
+            description=(
+                "Achetez des collecteurs pour récolter automatiquement.\n"
+                f"Tous les {config.MILESTONE_STEP} exemplaires d'un même collecteur, sa production double.\n"
+                f"Lucioles : **{fireflies}**"
+            ),
             color=EMBED_COLOR,
         )
         for i, owned in enumerate(_counts(player)):
-            rate = config.COLLECTOR_RATES[i] * mult
+            rate = game.collector_rate(i, owned, treelevel)
             cost = format_number(game.collector_cost(i, owned))
+            next_milestone = (owned // config.MILESTONE_STEP + 1) * config.MILESTONE_STEP
             embed.add_field(
-                name=f"{config.COLLECTOR_NAMES_SINGULAR[i]} · {format_number(rate)}/s",
-                value=f"Prix : {cost} · Possédés : {format_number(owned)}",
+                name=f"{config.COLLECTOR_NAMES_SINGULAR[i]} · {format_number(rate)}/s chacun",
+                value=(f"Prix : {cost} · Possédés : {format_number(owned)} "
+                       f"(x{format_number(game.milestone_bonus(owned))}) · Prochain palier : {next_milestone}"),
                 inline=False,
             )
+        upgrades = player["click_upgrades"]
+        embed.add_field(
+            name=f"Amélioration de clic · niveau {format_number(upgrades)}",
+            value=(f"Prix : {format_number(game.click_upgrade_cost(upgrades))} · "
+                   f"Chaque niveau ajoute {100 // config.CLICK_UPGRADE_RATIO} % de la production par seconde à chaque capture"),
+            inline=False,
+        )
 
     elif page == "arbre":
         embed = discord.Embed(
             title="Arbre de vie",
             description=(
-                "Renaître sacrifie vos lucioles et vos collecteurs "
+                "Renaître sacrifie vos lucioles, vos collecteurs et vos améliorations "
                 "pour faire grandir l'arbre, ce qui multiplie définitivement vos gains."
             ),
             color=EMBED_COLOR,
@@ -73,7 +88,7 @@ def build_embed(page: str, player: dict, notice: str = "") -> discord.Embed:
         embed = discord.Embed(
             title="Renaître ?",
             description=(
-                "Vous allez perdre **toutes vos lucioles et tous vos collecteurs**.\n"
+                "Vous allez perdre **toutes vos lucioles, tous vos collecteurs et vos améliorations**.\n"
                 f"Votre arbre passera au niveau **{treelevel + 1}** (x{mult + 1})."
             ),
             color=EMBED_COLOR,
@@ -128,6 +143,9 @@ class View_fabric(discord.ui.View):
                 affordable = fireflies >= game.collector_cost(i, owned)
                 self._add(f"Acheter : {config.COLLECTOR_NAMES_SINGULAR[i]}", discord.ButtonStyle.secondary,
                           self._buy(i), row=1 + i // 2, disabled=not affordable)
+            upgrade_affordable = fireflies >= game.click_upgrade_cost(self.player["click_upgrades"])
+            self._add("Acheter : Amélioration de clic", discord.ButtonStyle.secondary,
+                      self._buy_upgrade, row=3, disabled=not upgrade_affordable)
         elif self.page == "arbre":
             affordable = fireflies >= game.rebirth_cost(self.player["treelevel"])
             self._add("Renaître", discord.ButtonStyle.danger, self._go("confirmation"), row=1, disabled=not affordable)
@@ -159,6 +177,10 @@ class View_fabric(discord.ui.View):
             self.player, ok = await db.buy_collector(self.owner_id, self.name, index)
             await self._show(interaction, notice="" if ok else "Pas assez de lucioles.")
         return callback
+
+    async def _buy_upgrade(self, interaction: discord.Interaction):
+        self.player, ok = await db.buy_click_upgrade(self.owner_id, self.name)
+        await self._show(interaction, notice="" if ok else "Pas assez de lucioles.")
 
     async def _rebirth(self, interaction: discord.Interaction):
         self.player, ok = await db.rebirth(self.owner_id, self.name)

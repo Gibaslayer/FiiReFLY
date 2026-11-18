@@ -7,7 +7,13 @@ COLLECTOR_BASE_COSTS = (15, 1_000, 100_000, 10_000_000)
 COLLECTOR_RATES = (1, 10, 100, 1000)  # lucioles par seconde et par collecteur
 COST_GROWTH = 1.15                    # le prix est multiplié par 1,15 à chaque exemplaire possédé
 
-CLICK_COOLDOWN = 1.0                  # secondes minimum entre deux clics
+MILESTONE_STEP = 25                   # à chaque multiple de 25 collecteurs d'un type, sa production double
+
+CLICK_UPGRADE_BASE_COST = 5_000       # amélioration de clic : prix du premier niveau
+CLICK_UPGRADE_GROWTH = 1.5            # le prix est multiplié par 1,5 à chaque niveau possédé
+CLICK_UPGRADE_RATIO = 10              # chaque niveau ajoute 1/10 (0,1x) de la production par seconde à chaque clic
+
+CLICK_COOLDOWN = 1.0                 # secondes minimum entre deux clics
 OFFLINE_CAP = 8 * 3600                # production hors ligne plafonnée à 8 h
 
 REBIRTH_BASE = 1_000_000              # coût du niveau 0 -> 1
