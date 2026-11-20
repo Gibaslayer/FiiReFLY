@@ -49,6 +49,8 @@ def result_embed(color: str, bet: int, player: dict, result: tuple[str, int] | N
         color=discord.Color.brand_green() if won else discord.Color.red(),
     )
     embed.add_field(name="Lucioles", value=format_number(player["fireflies"]))
+    embed.add_field(name="Gagné au gambling (total)", value=format_number(player["gambling_won"]))
+    embed.add_field(name="Perdu au gambling (total)", value=format_number(player["gambling_lost"]))
     return embed
 
 

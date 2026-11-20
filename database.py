@@ -11,6 +11,13 @@ TIMEOUT = 10  # secondes d'attente si la base est occupée
 
 COLLECTOR_COLUMNS = ("collectors", "collectorsv2", "collectorsv3", "collectorsv4")
 
+# Colonnes ajoutées après la première version : on les ajoute aux anciennes bases au démarrage.
+NEW_COLUMNS = {
+    "click_upgrades": "INTEGER NOT NULL DEFAULT 0",
+    "gambling_lost": "INTEGER NOT NULL DEFAULT 0",  # total des lucioles perdues en pariant
+    "gambling_won": "INTEGER NOT NULL DEFAULT 0",  # total des lucioles gagnées en pariant (gains nets)
+}
+
 
 async def init_db():
     async with aiosqlite.connect(DB_NAME, timeout=TIMEOUT) as db:
@@ -28,14 +35,11 @@ async def init_db():
                 treelevel INTEGER NOT NULL DEFAULT 0,
                 last_collected REAL NOT NULL,
                 last_manual_click REAL NOT NULL DEFAULT 0,
-                click_upgrades INTEGER NOT NULL DEFAULT 0
+                click_upgrades INTEGER NOT NULL DEFAULT 0,
+                gambling_lost INTEGER NOT NULL DEFAULT 0,
+                gambling_won INTEGER NOT NULL DEFAULT 0
             )
         """)
-        # Migration : les bases créées avant l'amélioration de clic n'ont pas la colonne.
-        async with db.execute("PRAGMA table_info(players)") as cursor:
-            columns = {row[1] for row in await cursor.fetchall()}
-        if "click_upgrades" not in columns:
-            await db.execute("ALTER TABLE players ADD COLUMN click_upgrades INTEGER NOT NULL DEFAULT 0")
         await db.commit()
 
 
@@ -43,43 +47,55 @@ def _counts(player: dict) -> tuple[int, int, int, int]:
     return tuple(player[column] for column in COLLECTOR_COLUMNS)
 
 
+async def _load_player(db, user_id: int, name: str, now: float) -> dict:
+    """Lit la fiche du joueur (la crée si besoin) et y ajoute la production depuis sa dernière visite.
+
+    player["now"] est l'instant de l'opération (non enregistré).
+    """
+    await db.execute(
+        "INSERT OR IGNORE INTO players (user_id, name, last_collected) VALUES (?, ?, ?)",
+        (user_id, name, now),
+    )
+    async with db.execute("SELECT * FROM players WHERE user_id = ?", (user_id,)) as cursor:
+        player = dict(await cursor.fetchone())
+
+    elapsed = now - player["last_collected"]
+    seconds = game.credited_seconds(elapsed)
+    gain = seconds * game.production_per_second(_counts(player), player["treelevel"])
+    player["fireflies"] = min(player["fireflies"] + gain, config.MAX_FIREFLIES)
+    # On n'avance que des secondes entières créditées : la fraction restante
+    # n'est pas perdue. Au-delà du plafond hors ligne, l'excédent est abandonné.
+    player["last_collected"] = now if elapsed > config.OFFLINE_CAP else player["last_collected"] + seconds
+    player["name"] = name
+    player["now"] = now
+    return player
+
+
+async def _save_player(db, player: dict):
+    await db.execute(
+        """UPDATE players SET name = ?, fireflies = ?, collectors = ?, collectorsv2 = ?,
+           collectorsv3 = ?, collectorsv4 = ?, treelevel = ?, last_collected = ?,
+           last_manual_click = ?, click_upgrades = ?, gambling_lost = ?,
+           gambling_won = ? WHERE user_id = ?""",
+        (player["name"], player["fireflies"], *_counts(player), player["treelevel"],
+         player["last_collected"], player["last_manual_click"], player["click_upgrades"],
+         player["gambling_lost"], player["gambling_won"], player["user_id"]),
+    )
+
+
 @asynccontextmanager
 async def _transaction(user_id: int, name: str):
     """Une opération = une transaction : lecture, production hors ligne, écriture.
 
     Une opération concurrente attend la fin de celle-ci et repart de l'état à jour.
-    player["now"] est l'instant de l'opération (non enregistré).
     """
     now = time.time()
     async with aiosqlite.connect(DB_NAME, timeout=TIMEOUT) as db:
         db.row_factory = aiosqlite.Row
         await db.execute("BEGIN IMMEDIATE")
-        await db.execute(
-            "INSERT OR IGNORE INTO players (user_id, name, last_collected) VALUES (?, ?, ?)",
-            (user_id, name, now),
-        )
-        async with db.execute("SELECT * FROM players WHERE user_id = ?", (user_id,)) as cursor:
-            player = dict(await cursor.fetchone())
-
-        elapsed = now - player["last_collected"]
-        seconds = game.credited_seconds(elapsed)
-        gain = seconds * game.production_per_second(_counts(player), player["treelevel"])
-        player["fireflies"] = min(player["fireflies"] + gain, config.MAX_FIREFLIES)
-        # On n'avance que des secondes entières créditées : la fraction restante
-        # n'est pas perdue. Au-delà du plafond hors ligne, l'excédent est abandonné.
-        player["last_collected"] = now if elapsed > config.OFFLINE_CAP else player["last_collected"] + seconds
-        player["name"] = name
-        player["now"] = now
-
+        player = await _load_player(db, user_id, name, now)
         yield player
-
-        await db.execute(
-            """UPDATE players SET name = ?, fireflies = ?, collectors = ?, collectorsv2 = ?,
-               collectorsv3 = ?, collectorsv4 = ?, treelevel = ?, last_collected = ?,
-               last_manual_click = ?, click_upgrades = ? WHERE user_id = ?""",
-            (player["name"], player["fireflies"], *_counts(player), player["treelevel"],
-             player["last_collected"], player["last_manual_click"], player["click_upgrades"], user_id),
-        )
+        await _save_player(db, player)
         await db.commit()
 
 
@@ -142,7 +158,45 @@ async def gamble(user_id: int, name: str, choice: str, bet: int) -> tuple[dict, 
         outcome = game.spin()
         payout = game.gamble_payout(choice, outcome, bet)
         player["fireflies"] = min(player["fireflies"] - bet + payout, config.MAX_FIREFLIES)
+        if payout == 0:
+            player["gambling_lost"] += bet
+        else:
+            player["gambling_won"] += payout - bet  # gain net
         return player, (outcome, payout)
+
+
+async def duel(user_id: int, name: str, opponent_id: int, opponent_name: str,
+               side: str, bet: int) -> tuple[dict, dict, tuple[str, int] | None]:
+    """Pile ou face entre deux joueurs : le gagnant prend la mise de l'autre.
+
+    `side` est le côté choisi par `user_id` (l'adversaire a l'autre). Renvoie
+    (joueur, adversaire, (côté tiré, id du gagnant)), ou None à la place du résultat
+    si l'un des deux n'a pas assez de lucioles. Les deux fiches sont modifiées
+    dans la même transaction.
+    """
+    if user_id == opponent_id:
+        raise ValueError("On ne peut pas se défier soi-même")
+    now = time.time()
+    async with aiosqlite.connect(DB_NAME, timeout=TIMEOUT) as db:
+        db.row_factory = aiosqlite.Row
+        await db.execute("BEGIN IMMEDIATE")
+        player = await _load_player(db, user_id, name, now)
+        opponent = await _load_player(db, opponent_id, opponent_name, now)
+
+        result = None
+        if bet >= 1 and player["fireflies"] >= bet and opponent["fireflies"] >= bet:
+            outcome = game.coin_flip()
+            winner, loser = (player, opponent) if outcome == side else (opponent, player)
+            winner["fireflies"] = min(winner["fireflies"] + bet, config.MAX_FIREFLIES)
+            loser["fireflies"] -= bet
+            loser["gambling_lost"] += bet
+            winner["gambling_won"] += bet
+            result = (outcome, winner["user_id"])
+
+        await _save_player(db, player)
+        await _save_player(db, opponent)
+        await db.commit()
+    return player, opponent, result
 
 
 async def _ranked(by_tree_level: bool) -> list[dict]:

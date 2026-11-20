@@ -55,6 +55,11 @@ def spin() -> str:
     return _rng.choices(colors, weights=tuple(config.GAMBLING_WEIGHTS.values()))[0]
 
 
+def coin_flip() -> str:
+    """Pile ou face, une chance sur deux chacun."""
+    return _rng.choice(("pile", "face"))
+
+
 def gamble_payout(choice: str, outcome: str, bet: int) -> int:
     """Lucioles rendues au joueur (mise comprise) : 0 si perdu."""
     return bet * config.GAMBLING_PAYOUTS[choice] if choice == outcome else 0

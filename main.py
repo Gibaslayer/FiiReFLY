@@ -10,7 +10,8 @@ import api
 import config
 import database as db
 import game
-from view_firefly_fabric import View_fabric, format_number
+from view_duel import DuelView
+from view_firefly_fabric import View_fabric, format_compact, format_number
 from view_gambling import GamblingView
 
 load_dotenv()
@@ -49,6 +50,8 @@ async def frime(interaction: discord.Interaction):
     production = game.production_per_second(counts, player["treelevel"])
     embed.add_field(name="Production", value=f"{format_number(production)} lucioles / s", inline=False)
     embed.add_field(name="Arbre", value=f"Niveau {player['treelevel']} (x{game.multiplier(player['treelevel'])})", inline=False)
+    embed.add_field(name="Gagné au gambling", value=f"{format_number(player['gambling_won'])} lucioles", inline=False)
+    embed.add_field(name="Perdu au gambling", value=f"{format_number(player['gambling_lost'])} lucioles", inline=False)
     collectors = "\n".join(
         f"{name} : {format_number(player[column])}"
         for name, column in zip(config.COLLECTOR_NAMES, db.COLLECTOR_COLUMNS)
@@ -59,7 +62,7 @@ async def frime(interaction: discord.Interaction):
 
 def _leaderboard_line(rank: int, row: dict) -> str:
     return f"**{rank}.**" + discord.utils.escape_markdown(
-        f" {row['name']} : {format_number(row['fireflies'])} lucioles (arbre niveau {row['treelevel']})"
+        f" {row['name']} : {format_compact(row['fireflies'])} lucioles (arbre niveau {row['treelevel']})"
     )
 
 
@@ -85,7 +88,7 @@ async def classement_lucioles(interaction: discord.Interaction):
     await _send_leaderboard(interaction, by_tree_level=False)
 
 
-@bot.tree.command(name="game", description="Ouvre ton atelier de lucioles")
+@bot.tree.command(name="jeu", description="Ouvre ton atelier de lucioles")
 async def open_game(interaction: discord.Interaction):
     view = View_fabric(interaction.user.id, interaction.user.name)
     await view.start(interaction)
@@ -107,6 +110,28 @@ async def gambling(interaction: discord.Interaction, couleur: app_commands.Choic
         )
         return
     view = GamblingView(interaction.user.id, interaction.user.name, couleur.value, mise)
+    await view.start(interaction)
+
+
+@bot.tree.command(name="pileouface", description="Défie un joueur au pile ou face : le gagnant remporte la mise de l'autre")
+@app_commands.describe(adversaire="Le joueur que tu défies", cote="Ton côté (l'adversaire aura l'autre)", mise="Lucioles misées par chacun")
+@app_commands.choices(cote=[
+    app_commands.Choice(name="Pile", value="pile"),
+    app_commands.Choice(name="Face", value="face"),
+])
+async def pileouface(interaction: discord.Interaction, adversaire: discord.Member,
+                     cote: app_commands.Choice[str], mise: app_commands.Range[int, 1]):
+    if adversaire.id == interaction.user.id or adversaire.bot:
+        await interaction.response.send_message("Défie un autre joueur (ni toi-même, ni un bot).", ephemeral=True)
+        return
+    player = await db.get_player(interaction.user.id, interaction.user.name)
+    if player["fireflies"] < mise:
+        await interaction.response.send_message(
+            f"Tu n'as que **{format_number(player['fireflies'])}** lucioles : impossible d'en miser {format_number(mise)}.",
+            ephemeral=True,
+        )
+        return
+    view = DuelView(interaction.user, adversaire, cote.value, mise)
     await view.start(interaction)
 
 

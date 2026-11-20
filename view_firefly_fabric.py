@@ -6,11 +6,25 @@ import game
 
 EMBED_COLOR = discord.Color.gold()
 
-PAGES = (("accueil", "Accueil"), ("atelier", "Atelier"), ("boutique", "Boutique"), ("arbre", "Arbre"))
+PAGES = (("accueil", "🏠 Accueil"), ("atelier", "🛠️ Atelier"), ("boutique", "🏪 Boutique"), ("arbre", "🌲Arbre"))
 
 
 def format_number(n: int) -> str:
     return f"{n:,}".replace(",", " ")
+
+
+COMPACT_UNITS = ("", "K", "M", "Md", "Bn", "Bd", "Tn")  # milliers, millions, milliards, billions, billiards, trillions
+
+
+def format_compact(n: int) -> str:
+    """Version courte : 950 -> 950, 1 500 -> 1,5K, 2 000 000 -> 2M, 3 000 000 000 -> 3Md."""
+    unit = 0
+    while n >= 1000 ** (unit + 1) and unit < len(COMPACT_UNITS) - 1:
+        unit += 1
+    if unit == 0:
+        return str(n)
+    whole, decimal = divmod(n * 10 // 1000 ** unit, 10)  # une décimale, tronquée
+    return f"{whole},{decimal}{COMPACT_UNITS[unit]}" if decimal else f"{whole}{COMPACT_UNITS[unit]}"
 
 
 def _counts(player: dict) -> tuple[int, int, int, int]:

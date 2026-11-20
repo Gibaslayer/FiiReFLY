@@ -22,6 +22,7 @@
 - `/classement` : top 10 des joueurs (niveau d'arbre, puis lucioles)
 - `/classement_lucioles` : top 10 des joueurs par nombre de lucioles
 - `/gambling <rouge|noir|vert> <mise>` : parie des lucioles à Yggdrasil (rouge/noir x2, vert x36), avec confirmation
+- `/pileouface <adversaire> <pile|face> <mise>` : défie un joueur, le gagnant remporte la mise de l'autre
 - `/bonjour` : le bot te dit bonjour
 
 **API du classement**
